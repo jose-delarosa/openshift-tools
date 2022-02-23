@@ -41,8 +41,6 @@
 # - Required: Cluster name
 # - Required: Domain name
 # - Required: OCP version
-# - Optional: RHCOS version
-# - Optional: Number of workers to deploy (0-2)
 #
 # Wishlist:
 # - Add interactive menu and list all OCP versions available:
@@ -60,7 +58,7 @@ cluster=
 domain=
 ocp_vers=
 rhcos_vers=
-workers=0
+flavor=small
 
 # This var is currently not used, leaving here as part of future improvements
 valid_domains="dlr131.com dlr132.com dlr133.com dlr134.com"
@@ -81,12 +79,11 @@ end="\033[0m"
 usage() {
     echo "Usage: `basename $0` <options>"
     echo "Options:"
-    echo "  -c --cluster <name>       Cluster name ('labX')"
-    echo "  -d --domain <name>        Domain name ('dlr13X.com')"
-    echo "  -v --ocp-vers <vers>      OCP version ('4.8.12', '4.9.5')"
-    echo "  -r --rhcos-vers <vers>    Optional: RHCOS version (def: latest)"
-#   echo "  -w --workers <0|1|2>      Optional: Number of workers (def: 0)"
-    echo "  -h --help                 Display this menu"
+    echo "  -c --cluster <name>         Cluster name ('labX')"
+    echo "  -d --domain <name>          Domain name ('dlr13X.com')"
+    echo "  -v --ocp-vers <vers>        OCP version ('4.8.12', '4.9.5')"
+    echo "  -f --flavor <small|medium>  Optional: Flavor (def: small)"
+    echo "  -h --help                   Display this menu"
     exit
 }
 
@@ -122,18 +119,12 @@ ask_continue() {
 
 verify_env() {
     domain=$1
-    workers=$2
     # Check values provided - there's probably a more elegant way
     if [ $domain = "dlr131.com" -o $domain = "dlr132.com" \
           -o $domain = "dlr133.com" -o $domain = "dlr134.com" ] ; then
         out "Domain $domain is valid"
     else
         err "Domain $domain is not valid, please try again"
-    fi
-    if [ $workers -gt 2 ] ; then
-        err "Workers can only be 0, 1 or 2"
-    else
-        out "Number of workers ($workers) is valid"
     fi
 
     # Check if a cluster already exists in the domain before continuing
@@ -398,7 +389,6 @@ create_volumes() {
     # Node names will depend on what domain I choose
     # I have already checked for valid domains
     domain=$1
-    workers=$2
     pool="dir"
     domain_no=`echo $domain | cut -c 4-6`
 
@@ -412,13 +402,6 @@ create_volumes() {
     virsh vol-create-as $pool master0-$domain_no ${m_disk}G
     virsh vol-create-as $pool master1-$domain_no ${m_disk}G
     virsh vol-create-as $pool master2-$domain_no ${m_disk}G
-    # Up to 2 workers - there has to be a better way to do this
-    if [ $workers = 1 ] ; then
-        virsh vol-create-as $pool worker0-$domain_no ${w_disk}G
-    elif [ $workers = 2 ] ; then
-        virsh vol-create-as $pool worker0-$domain_no ${w_disk}G
-        virsh vol-create-as $pool worker1-$domain_no ${w_disk}G
-    fi
 }
 
 virt_install() {
@@ -445,9 +428,9 @@ virt_install() {
 create_nodes() {
     # Bridge and other information will depend on what domain I use
     domain=$1
-    workers=$2
-    rhcos_vers=$3
-    ocp_vers=$4
+    rhcos_vers=$2
+    ocp_vers=$3
+    flavor=$4
     domain_no=`echo $domain | cut -c 4-6`
 
     # Domains allowed
@@ -465,18 +448,14 @@ create_nodes() {
         macd=c4
     fi
 
-    # For now, and until I can deploy separate workers, I set same resources
-    #
-    # Lower resources used on masters if also deploying dedicated workers
-    # if [ $workers = 0 ] ; then
-    #     vcpus=8
-    #     vmem=32768
-    # else
-    #     vcpus=4
-    #     vmem=16384
-    # fi
-    vcpus=4
-    vmem=16384
+    # Choose between 2 "flavors" of resources
+    if [ $flavor = "small" ] ; then
+        vcpus=4
+        vmem=16384
+    else
+        vcpus=8
+        vmem=32768
+    fi
 
     # virt_install <vm> <ignition> <mac> <bridge> <rhcos_vers> <vcpu> <vram>
     virt_install bootstrap-$domain_no bootstrap.ign 52:54:00:34:$macd:ff \
@@ -487,16 +466,6 @@ create_nodes() {
         $bridge $rhcos_vers $vcpus $vmem
     virt_install master1-$domain_no master.ign 52:54:00:34:$macd:a1 \
         $bridge $rhcos_vers $vcpus $vmem
-    # Up to 2 workers - there has to be a better way to do this
-    if [ $workers = 1 ] ; then
-        virt_install worker0-$domain_no worker.ign 52:54:00:34:$macd:b0 \
-            $bridge $rhcos_vers $vcpus $vmem
-    elif [ $workers = 2 ] ; then
-        virt_install worker0-$domain_no worker.ign 52:54:00:34:$macd:b0 \
-            $bridge $rhcos_vers $vcpus $vmem
-        virt_install worker1-$domain_no worker.ign 52:54:00:34:$macd:b1 \
-            $bridge $rhcos_vers $vcpus $vmem
-    fi
 }
 
 copy_auth_to_bastion() {
@@ -536,14 +505,10 @@ case $key in
     ocp_vers="$2"
     shift
     ;;
-    -r|--rhcos-vers)
-    rhcos_vers="$2"
+    -f|--flavor)
+    flavor="$2"
     shift
     ;;
-#   -w|--workers)
-#   workers="$2"
-#   shift
-#   ;;
     *)
 
     ;;
@@ -554,16 +519,19 @@ done
 if [ "$cluster" = "" -o "$domain" = "" -o "$ocp_vers" = "" ] ; then
     usage
 fi
-
-out "Time started: `date +%H:%M:%S`"
-
-# Get RHCOS version from OCP version. Ex: For OCP 4.8.12, use RHCOS 4.8-latest
-if [ X"$rhcos_vers" = X ] ; then
-    get_proper_rhcos_vers $ocp_vers
+if [ ! "$flavor" = "small" -a ! "$flavor" = "medium" ] ; then
+    usage
 fi
 
+# Let's keep track of time
+out "Time started: `date +%H:%M:%S`"
+ts1=`date +%s`
+
+# Get RHCOS version from OCP version. Example: For OCP 4.8.12, use RHCOS 4.8-latest
+get_proper_rhcos_vers $ocp_vers
+
 # Verify minimum requirements are met and download images & bins if needed
-verify_env $domain $workers
+verify_env $domain
 download_images $rhcos_vers $ocp_vers
 download_bins $ocp_vers
 extract_bins $ocp_vers
@@ -575,11 +543,17 @@ move_ignition_files
 
 # Create VMs (boot from network) and monitor progress
 # ask_continue "Continue with creating nodes?"
-create_volumes $domain $workers
-create_nodes $domain $workers $rhcos_vers $ocp_vers
+create_volumes $domain
+create_nodes $domain $rhcos_vers $ocp_vers $flavor
 monitor_vms $domain
 copy_auth_to_bastion $cluster
 get_status
-out "Time finished: `date +%H:%M:%S`"
 
-# 2022.02.14 22:07:54 - JD
+# Take another timestamp and calculate total time to install cluster
+out "Time finished: `date +%H:%M:%S`"
+ts2=`date +%s`
+tsdiff=$((ts2 - ts1))
+mins=$((tsdiff / 60))
+out "Total minutes: $mins"
+
+# 2022.02.22 14:44:56 - JD
