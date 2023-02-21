@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-#
+# ---
 # This is an opinionated script to deploy an OpenShift cluster using virtual
 # machines. A virtual network should already exist, including a properly
 # configured DNS and DHCP server.
@@ -35,22 +35,21 @@
 # - Load balancer
 # - Pull secret
 # - Public SSH key
-# - ~/.ssh/config setup with passwordless access to bastion node
 #
 # Inputs:
 # - Required: Cluster name
 # - Required: Domain name
 # - Required: OCP version
+# - Optional: Node 'flavor' (à la OpenStack)
 #
 # Wishlist:
 # - Add interactive menu and list all OCP versions available:
 #   URL=https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/
-#     OCP 4.7: $URL/latest-4.7/release.txt
-#     OCP 4.8: $URL/latest-4.8/release.txt
-#     OCP 4.9: $URL/latest-4.9/release.txt
+#     OCP 4.10: $URL/latest-4.10/release.txt
+#     OCP 4.11: $URL/latest-4.11/release.txt
+#     OCP 4.12: $URL/latest-4.12/release.txt
 # - Verify sha256sum of downloaded files
-# - Pass option to specify CPUs and RAM
-# - If a given OCP version does not exist, make more obvious
+# - Better error handling if OCP version doesn't exist in mirror.openshift.com
 # - Check if disk volumes already exist before creating
 
 # Default values
@@ -126,6 +125,14 @@ verify_env() {
     else
         err "Domain $domain is not valid, please try again"
     fi
+
+    # This is better, but how do I error out if the domain is not found?
+    #for valid_domain in $valid_domains ; do
+    #    if [ $valid_domain = $domain ] ; then
+    #        out "Domain $domain is valid"
+    #        break
+    #    fi
+    #done
 
     # Check if a cluster already exists in the domain before continuing
     domain_no=`echo $domain | cut -c 4-6`
@@ -556,4 +563,4 @@ tsdiff=$((ts2 - ts1))
 mins=$((tsdiff / 60))
 out "Total minutes: $mins"
 
-# 2022.02.22 14:44:56 - JD
+# 2022.08.17 10:52:45 - JD
