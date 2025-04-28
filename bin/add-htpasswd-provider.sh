@@ -8,9 +8,9 @@ green="\033[92m"
 red="\033[91m"
 end="\033[0m"
 
-ADMIN="sysman"
-USER="user"
-PSWD="password"
+ADMIN="admin"
+USER="developer"
+PSWD="P@ssw0rd"
 OAUTH="/tmp/oauth"
 HTPASSWD="/tmp/htpasswd"
 SECRET="htpasswd-secret"
@@ -35,6 +35,10 @@ oc replace -f $OAUTH
 echo "Creating $HTPASSWD..."
 htpasswd -c -B -b $HTPASSWD $ADMIN $PSWD
 htpasswd    -B -b $HTPASSWD $USER  $PSWD
+# Adding more non-admin users
+htpasswd    -B -b $HTPASSWD user1 $PSWD
+htpasswd    -B -b $HTPASSWD user2 $PSWD
+htpasswd    -B -b $HTPASSWD user3 $PSWD
 
 echo "Creating secret..."
 oc create secret generic $SECRET \
@@ -44,7 +48,7 @@ oc create secret generic $SECRET \
 echo "Adding roles to users..."
 oc adm policy add-cluster-role-to-user cluster-admin $ADMIN
 
-echo -e "${green}Done!${end} In about 1-2 minutes, check that new oauth pods were created:"
+echo -e "${green}Done!${end} In 2 mins, check that new oauth pods were created:"
 echo "  oc get pods -n openshift-authentication"
 
-# 2022.06.17 12:59:25 - JD
+# 2024.03.04 11:27:25 - JD

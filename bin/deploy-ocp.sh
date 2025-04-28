@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright 2022 Jose Delarosa
+# Copyright 2024 Jose Delarosa
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,25 +38,34 @@
 #
 # Inputs:
 # - Required: Cluster name
-# - Required: Domain name
 # - Required: OCP version
 # - Optional: Node 'flavor' (à la OpenStack)
 #
 # Wishlist:
 # - Add interactive menu and list all OCP versions available:
 #   URL=https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/
-#     OCP 4.10: $URL/latest-4.10/release.txt
-#     OCP 4.11: $URL/latest-4.11/release.txt
-#     OCP 4.12: $URL/latest-4.12/release.txt
+#     OCP 4.14: $URL/latest-4.14/release.txt
+#     OCP 4.15: $URL/latest-4.15/release.txt
+#     OCP 4.16: $URL/latest-4.16/release.txt
 # - Verify sha256sum of downloaded files
 # - Better error handling if OCP version doesn't exist in mirror.openshift.com
 # - Check if disk volumes already exist before creating
+#
+# Note about new OCP releases:
+# - When a new OpenShift release is out (i.e. 4.14, 4.16) some manual
+#   intervention is required on the install host:
+#   a. Manually download new RHCOS images to /var/ftp/pub/ocp/rhcos
+#   b. Create symlink: 4.16-latest -> 4.16.0
+#   c. Do not create any directories in /var/ftp/pub/ocp/rhcos-install
 
 # Default values
 cluster=
 domain=
 ocp_vers=
 rhcos_vers=
+disks=no
+disk_size=20G
+vol_dir=/share3/img	# Used for creating additional local disks
 flavor=small
 
 # This var is currently not used, leaving here as part of future improvements
@@ -69,6 +78,8 @@ BASE_DIR=/var/ftp/pub/ocp
 INSTALL_DIR=$BASE_DIR/rhcos-install
 PULLSECRET_FILE=$BASE_DIR/files/pull-secret-gmail.txt
 SSHKEY_FILE=$BASE_DIR/files/id_rsa.pub
+BASTION=b131
+BASTION_USER=jdelaros
 
 # Colors
 green="\033[92m"
@@ -78,9 +89,9 @@ end="\033[0m"
 usage() {
     echo "Usage: `basename $0` <options>"
     echo "Options:"
-    echo "  -c --cluster <name>         Cluster name ('labX')"
-    echo "  -d --domain <name>          Domain name ('dlr13X.com')"
-    echo "  -v --ocp-vers <vers>        OCP version ('4.8.12', '4.9.5')"
+    echo "  -c --cluster <name>         Cluster name ('lab1-lab4')"
+    echo "  -v --ocp-vers <vers>        OCP version ('4.12.18', '4.14.1')"
+    echo "  -d --disks <yes|no>         Optional: Add'n disks (def: no)"
     echo "  -f --flavor <small|medium>  Optional: Flavor (def: small)"
     echo "  -h --help                   Display this menu"
     exit
@@ -103,6 +114,21 @@ out() {
     done
 }
 
+spinner() {
+    sleep $1 &
+    PID=$!
+    i=1
+    sp="/-\|"
+
+    echo -n ' '
+    while [ -d /proc/$PID ]
+    do
+       printf "\b${sp:i++%${#sp}:1}"
+       sleep 1
+    done
+    echo -ne "Done\r"
+}
+
 ok() {
     test -z "$1" && echo " ok" || echo " ${1}"
 }
@@ -118,6 +144,8 @@ ask_continue() {
 
 verify_env() {
     domain=$1
+    sleep=10
+
     # Check values provided - there's probably a more elegant way
     if [ $domain = "dlr131.com" -o $domain = "dlr132.com" \
           -o $domain = "dlr133.com" -o $domain = "dlr134.com" ] ; then
@@ -143,12 +171,15 @@ verify_env() {
         out "No existing master0-$domain_no VM found, proceeding"
     fi
 
-    # Check that loadbalancer is running
+    # Starting the loadbalancer first
+    out "Starting load balancer..."
     state=`virsh dominfo haproxy-$domain_no | grep ^State | awk '{print $2}'`
     if [ $state != "running" ] ; then
-        err "haproxy-$domain_no is not running, start and try again"
+        virsh start haproxy-${domain_no}
+        out "Sleeping $sleep seconds so LB services can start..."
+        spinner $sleep
     else
-        out "haproxy-$domain_no is running...proceeding"
+        out "haproxy-$domain_no is already running..."
     fi
 }
 
@@ -358,7 +389,7 @@ networking:
   clusterNetwork:
   - cidr: 10.128.0.0/14
     hostPrefix: 23
-  networkType: OpenShiftSDN
+  networkType: OVNKubernetes
   serviceNetwork:
   - 172.30.0.0/16
 platform:
@@ -426,8 +457,8 @@ virt_install() {
        --name ${vm} --ram=$vram --vcpus=$vcpu --disk vol=dir/${vm} \
        --os-variant rhel7.5 \
        --noreboot --noautoconsole --mac="${mac}" \
-       --location=http://solo.dlr.com/pub/ocp/rhcos-install/${rhcos_vers}/ \
-       --extra-args="nomodeset rd.neednet=1 coreos.inst=yes coreos.inst=yes coreos.inst.install_dev=vda coreos.live.rootfs_url=http://solo.dlr.com/pub/ocp/rhcos-install/${rhcos_vers}/rhcos-x86_64-live-rootfs.x86_64.img coreos.inst.ignition_url=http://solo.dlr.com/pub/ocp/rhcos-install/ignition/${ignition} console=tty0 console=ttyS0,115200" \
+       --location=http://solo.dlr10.com/pub/ocp/rhcos-install/${rhcos_vers}/ \
+       --extra-args="nomodeset rd.neednet=1 coreos.inst=yes coreos.inst=yes coreos.inst.install_dev=vda coreos.live.rootfs_url=http://solo.dlr10.com/pub/ocp/rhcos-install/${rhcos_vers}/rhcos-x86_64-live-rootfs.x86_64.img coreos.inst.ignition_url=http://solo.dlr10.com/pub/ocp/rhcos-install/ignition/${ignition} console=tty0 console=ttyS0,115200" \
        > /dev/null || err "Creating ${vm} failed"; ok
 
 }
@@ -476,12 +507,12 @@ create_nodes() {
 }
 
 copy_auth_to_bastion() {
-   cluster=$1
-   # These commands assume that SSH keys are already setup
-   scp -p $BASE_DIR/files/out/auth/kubeconfig bastion:~/.kube/config
-   scp -p $BASE_DIR/files/out/auth/kube* bastion:~/${cluster}
-   scp -p /usr/local/bin/oc bastion:/usr/local/bin
-   scp -p /usr/local/bin/kubectl bastion:/usr/local/bin
+    cluster=$1
+    # These commands assume that SSH keys are already setup
+    scp -p $BASE_DIR/files/out/auth/kube* \
+      ${BASTION_USER}@${BASTION}:~/.x-ocp-creds/${cluster}
+    scp -p /usr/local/bin/oc ${BASTION_USER}@${BASTION}:/usr/local/bin
+    scp -p /usr/local/bin/kubectl ${BASTION_USER}@${BASTION}:/usr/local/bin
 }
 
 get_status() {
@@ -491,8 +522,22 @@ get_status() {
         install-complete --log-level=debug
 }
 
+add_local_disks() {
+    domain=$1
+    domain_no=`echo $domain | cut -c 4-6`
+    out "Creating additional local disks and attaching them..."
+    vm_list="master0 master1 master2"
+    for vm in $vm_list; do
+        qemu-img create -f qcow2 -o preallocation=metadata ${vol_dir}/${vm}-${domain_no}-disk1 ${disk_size}
+        qemu-img create -f qcow2 -o preallocation=metadata ${vol_dir}/${vm}-${domain_no}-disk2 ${disk_size}
+        virsh attach-disk ${vm}-${domain_no} ${vol_dir}/${vm}-${domain_no}-disk1 vdb --persistent
+        virsh attach-disk ${vm}-${domain_no} ${vol_dir}/${vm}-${domain_no}-disk2 vdc --persistent
+        sleep 1                # Let's catch our breath
+    done
+}
+
 # Process args
-[ $# -lt 6 ] && usage          # Minimum is 2 params + value = 6
+[ $# -lt 4 ] && usage          # Minimum is 2 params + value = 4
 while [[ $# -gt 1 ]]
 do
 key="$1"
@@ -504,12 +549,12 @@ case $key in
     cluster="$2"
     shift
     ;;
-    -d|--domain)
-    domain="$2"
-    shift
-    ;;
     -v|--ocp-vers)
     ocp_vers="$2"
+    shift
+    ;;
+    -d|--disks)
+    disks="$2"
     shift
     ;;
     -f|--flavor)
@@ -523,7 +568,7 @@ esac
 shift
 done
 
-if [ "$cluster" = "" -o "$domain" = "" -o "$ocp_vers" = "" ] ; then
+if [ "$cluster" = "" -o "$ocp_vers" = "" ] ; then
     usage
 fi
 if [ ! "$flavor" = "small" -a ! "$flavor" = "medium" ] ; then
@@ -534,8 +579,16 @@ fi
 out "Time started: `date +%H:%M:%S`"
 ts1=`date +%s`
 
-# Get RHCOS version from OCP version. Example: For OCP 4.8.12, use RHCOS 4.8-latest
+# Get RHCOS vers from OCP vers. Example: For OCP 4.8.12, use RHCOS 4.8-latest
 get_proper_rhcos_vers $ocp_vers
+
+# Set the domain from the cluster name. These values are already set in my DNS
+# server. These if statements are not the most effective, but are easy to read.
+[ $cluster = "lab1" ] && domain="dlr131.com"
+[ $cluster = "lab2" ] && domain="dlr132.com"
+[ $cluster = "lab3" ] && domain="dlr133.com"
+[ $cluster = "lab4" ] && domain="dlr134.com"
+[ $domain = "" ] && usage		# catch failure
 
 # Verify minimum requirements are met and download images & bins if needed
 verify_env $domain
@@ -556,6 +609,9 @@ monitor_vms $domain
 copy_auth_to_bastion $cluster
 get_status
 
+# Create additional local disks and attach at the very end
+[ $disks = "yes" ] && add_local_disks $domain
+
 # Take another timestamp and calculate total time to install cluster
 out "Time finished: `date +%H:%M:%S`"
 ts2=`date +%s`
@@ -563,4 +619,4 @@ tsdiff=$((ts2 - ts1))
 mins=$((tsdiff / 60))
 out "Total minutes: $mins"
 
-# 2022.08.17 10:52:45 - JD
+# 2025.03.20 11:59:16 - JD
